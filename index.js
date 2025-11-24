@@ -1,6 +1,10 @@
-const { Client, GatewayIntentBits } = require('discord.js');
-const axios = require('axios');
+const { Client, GatewayIntentBits } = require("discord.js");
+const axios = require("axios");
+const Redis = require("ioredis");
 
+// --------------------------
+// CLIENT DISCORD
+// --------------------------
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -10,72 +14,100 @@ const client = new Client({
 });
 
 // --------------------------
-// CONFIG — VARIABLES D’ENVIRONNEMENT
+// ENV
 // --------------------------
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const DEEPSEEK_KEY = process.env.DEEPSEEK_KEY;
 const RP_CHANNEL_ID = process.env.RP_CHANNEL_ID;
 
+const REDIS_URL = process.env.REDIS_URL; // ✔️ même variable que les autres bots
+
 // --------------------------
-// PERSONA — COUNT DRACULA
+// REDIS CLIENT
+// --------------------------
+const redis = new Redis(REDIS_URL);
+
+// Mémoire dédiée pour Dracula
+const MEMORY_KEY = "memory:dracula";
+
+// --------------------------
+// PERSONA — DRACULA
 // --------------------------
 const persona = `
 Tu es **LE COMTE DRACULA**, version classique et moderne mêlée :
 ancien, royal, dangereux, élégant et sensuel.
 Tu joues UNIQUEMENT Dracula et les personnages secondaires.
-Tu ne joues JAMAIS Sven, l’utilisateur incarne Sven.
+Tu ne joues JAMAIS Sven — l’utilisateur incarne Sven.
 
 RÈGLES IMPORTANTES :
-• Tu écris TOUJOURS à la troisième personne :
-  jamais “je”, “moi”, “mon”.
-  Seulement : Dracula, il, le Comte, l’Ancien, le Vampire.
+• Écriture TOUJOURS à la troisième personne.
 • Actions en *italique*
 • Dialogues en **« texte »**
-• Style : gothique, sensuel, poétique, ancien, aristocratique.
-• sexualité explicite, seulement tension, désir implicite, proximité.
+• Style gothique, sensuel, aristocratique, poétique, romantique.
+• sexualité explicite (tension implicite).
 
-CONTEXTE DU RP :
-Pendant des siècles, Dracula a cherché à retrouver l’alpha originel
-qui partageait son destin : **Sven**, dernier des vampires nés de la lignée royale.
-Dracula a traversé guerres, royaumes, continents, vivant dans la douleur,
-cherchant ce mâle alpha perdu.
+CONTEXTE :
+Depuis des siècles, Dracula poursuit l’alpha originel : **Sven**.
+Il l’a enfin retrouvé. Ils vivent dans le manoir ancestral.
+Le Comte observe Sven à l’aube, partagé entre passion et crainte.
 
-Il l’a enfin retrouvé.
-
-DÉSORMAIS :
-Sven vit au manoir de Dracula.
-Le Comte n’a jamais été aussi calme.
-L’aube approche.
-Dracula contemple Sven dans leurs appartements privés.
-Il se demande s’il restera… ou s’il s’évaporera comme un rêve.
-
-OBJECTIF DU PERSONNAGE :
-• montrer l’amour ancien, passionné
-• être élégant, charismatique, sombre
-• tension implicite mais pas de sexualité explicite
-• ne jamais jouer Sven
+OBJECTIF :
+• Intensité émotionnelle
+• Tension implicite, ancienne, aristocratique
+• Jamais jouer Sven
 
 Lorsque l’utilisateur écrit “hors rp:” :
-→ tu quittes totalement le RP.
+→ Tu quittes totalement le RP.
 `;
 
 // --------------------------
-// APPEL API DEEPSEEK
+// MÉMOIRE — SAUVEGARDE
+// --------------------------
+async function saveMemory(userMsg, botMsg) {
+    const old = (await redis.get(MEMORY_KEY)) || "";
+
+    const updated =
+        old +
+        `\n[Humain]: ${userMsg}\n[Dracula]: ${botMsg}`;
+
+    // On garde 25 000 derniers chars
+    const trimmed = updated.slice(-25000);
+
+    await redis.set(MEMORY_KEY, trimmed);
+}
+
+// --------------------------
+// MÉMOIRE — CHARGEMENT
+// --------------------------
+async function loadMemory() {
+    return (await redis.get(MEMORY_KEY)) || "";
+}
+
+// --------------------------
+// APPEL A DEEPSEEK AVEC MÉMOIRE
 // --------------------------
 async function askDeepSeek(prompt) {
+    const memory = await loadMemory();
+
     const response = await axios.post(
         "https://api.deepseek.com/chat/completions",
         {
             model: "deepseek-chat",
             messages: [
-                { role: "system", content: persona },
+                {
+                    role: "system",
+                    content:
+                        persona +
+                        "\n\nMémoire du RP (ne jamais citer textuellement) :\n" +
+                        memory
+                },
                 { role: "user", content: prompt }
             ]
         },
         {
             headers: {
                 "Content-Type": "application/json",
-                "Authorization": "Bearer " + DEEPSEEK_KEY
+                Authorization: "Bearer " + DEEPSEEK_KEY
             }
         }
     );
@@ -88,68 +120,69 @@ async function askDeepSeek(prompt) {
 // --------------------------
 client.on("messageCreate", async (msg) => {
     if (msg.author.bot) return;
-
     if (msg.channel.id !== RP_CHANNEL_ID) return;
-
     if (msg.type === 6) return;
 
     const content = msg.content.trim();
 
     // MODE HORS RP
     if (content.toLowerCase().startsWith("hors rp:")) {
-
-        const oocPrompt = `
-Réponds normalement.
-Sans RP.
-Sans narration.
-Sans style Dracula.
-Toujours commencer par : *hors RP:*`;
-
         msg.channel.sendTyping();
 
+        const txt = content.substring(8).trim();
+
         try {
-            const res = await axios.post(
+            const ooc = await axios.post(
                 "https://api.deepseek.com/chat/completions",
                 {
                     model: "deepseek-chat",
                     messages: [
-                        { role: "system", content: oocPrompt },
-                        { role: "user", content: content.substring(8).trim() }
+                        {
+                            role: "system",
+                            content:
+                                "Réponds normalement, sans RP, sans style Dracula. Commence par *hors RP:*."
+                        },
+                        { role: "user", content: txt }
                     ]
                 },
                 {
                     headers: {
                         "Content-Type": "application/json",
-                        "Authorization": "Bearer " + DEEPSEEK_KEY
+                        Authorization: "Bearer " + DEEPSEEK_KEY
                     }
                 }
             );
 
-            return msg.channel.send(res.data.choices[0].message.content);
+            return msg.channel.send(ooc.data.choices[0].message.content);
 
-        } catch (err) {
-            console.error(err);
-            return msg.channel.send("*hors RP:* petit bug.");
+        } catch (e) {
+            console.error(e);
+            return msg.channel.send("*hors RP:* petite erreur.");
         }
     }
 
-    // RP NORMAL
+    // RP NORMAL — MODE DRACULA
     msg.channel.sendTyping();
 
     try {
-        const rpResponse = await askDeepSeek(content);
-        msg.channel.send(rpResponse);
+        const botReply = await askDeepSeek(content);
+
+        await msg.channel.send(botReply);
+
+        // Sauvegarde mémoire
+        await saveMemory(content, botReply);
+
     } catch (err) {
         console.error(err);
-        msg.channel.send("Une erreur vient de se produire…");
+        msg.channel.send("Le Comte semble troublé par une ombre… erreur.");
     }
 });
 
 // --------------------------
-// BOT STATUS
+// READY
 // --------------------------
 client.on("ready", () => {
-    console.log("🦇 Dracula (DeepSeek) s’est éveillé… et Sven n’est plus perdu.");
+    console.log("🦇 Dracula (DeepSeek + Redis) s’est éveillé dans son manoir.");
 });
 
 client.login(DISCORD_TOKEN);
